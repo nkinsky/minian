@@ -1,3 +1,32 @@
+## v1.2.1 (2022-02-10)
+
+### Fix
+
+- avoid syntax error in `update_spatial` returns
+
+## v1.2.0 (2022-02-09)
+
+### Feat
+
+- use least square to produce proper scaling in temporal components and background terms
+
+### Fix
+
+- rescale with normalizing factor when using `normalize` parameter in spatial and temporal update
+- fix unit id mismatch in spatial parameter exploration
+
+## v1.1.0 (2021-09-10)
+
+### Fix
+
+- pin jinja2 version to avoid doc build fail
+- use fft filter for peak-to-noise ratio computation
+- avoid conversion in `xrconcat_recursive`
+
+### Feat
+
+- baseline fluorescence correction in temporal update with median filter
+
 ## v1.0.1 (2021-05-05)
 
 ### Fix

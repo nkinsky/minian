@@ -1,7 +1,7 @@
 import functools as fct
 import itertools as itt
 import os
-from typing import Union, Tuple, Optional
+from typing import Optional, Tuple, Union
 
 import cv2
 import dask as da
@@ -11,16 +11,16 @@ import numpy as np
 import pandas as pd
 import sparse
 import xarray as xr
-from scipy.ndimage.filters import median_filter
 from scipy.ndimage.measurements import label
 from scipy.signal import butter, lfilter
+from scipy.sparse import csc_matrix
 from scipy.stats import kstest, zscore
 from skimage.morphology import disk
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import KDTree, radius_neighbors_graph
 
-from .cnmf import adj_corr, graph_optimize_corr, label_connected
-from .utilities import custom_arr_optimize, local_extreme, save_minian
+from .cnmf import adj_corr, filt_fft, graph_optimize_corr, label_connected
+from .utilities import local_extreme, med_baseline, save_minian, sps_lstsq
 
 
 def seeds_init(
@@ -422,33 +422,9 @@ def pnr_perseed(a: np.ndarray, freq: float, q: tuple) -> float:
     pnr_refine : for definition of peak-to-noise ratio
     """
     ptp = ptp_q(a, q)
-    but_b, but_a = butter(2, freq, btype="high", analog=False)
-    a = lfilter(but_b, but_a, a).real
+    a = filt_fft(a, freq, btype="high")
     ptp_noise = ptp_q(a, q)
     return ptp / ptp_noise
-
-
-def med_baseline(a: np.ndarray, wnd: int) -> np.ndarray:
-    """
-    Subtract baseline from a timeseries as estimated by median-filtering the
-    timeseries.
-
-    Parameters
-    ----------
-    a : np.ndarray
-        Input timeseries.
-    wnd : int
-        Window size of the median filter. This parameter is passed as `size` to
-        :func:`scipy.ndimage.filters.median_filter`.
-
-    Returns
-    -------
-    a : np.ndarray
-        Timeseries with baseline subtracted.
-    """
-    base = median_filter(a, size=wnd)
-    a -= base
-    return a
 
 
 def intensity_refine(
@@ -776,12 +752,9 @@ def initC(varr: xr.DataArray, A: xr.DataArray) -> xr.DataArray:
     """
     Initialize temporal component given spatial footprints.
 
-    The spatial footprints of each cell is first normalized to unit sum. Then
-    the temporal component is computed as the tensor dot product between the
+    The temporal component is computed as the least-square solution between the
     input movie and the spatial footprints over the "height" and "width"
-    dimensions. In other word, the initial temporal component is a weighted
-    average of fluorescence activities in the input data with weights defined by
-    spatial footprints.
+    dimensions.
 
     Parameters
     ----------
@@ -799,61 +772,19 @@ def initC(varr: xr.DataArray, A: xr.DataArray) -> xr.DataArray:
     """
     uids = A.coords["unit_id"]
     fms = varr.coords["frame"]
-    A = A.data.map_blocks(sparse.COO).map_blocks(lambda a: a / a.sum()).compute()
-    C = darr.tensordot(A, varr, axes=[(1, 2), (1, 2)])
+    A = (
+        A.stack(spatial=["height", "width"])
+        .transpose("spatial", "unit_id")
+        .data.map_blocks(csc_matrix)
+        .rechunk(-1)
+        .persist()
+    )
+    varr = varr.stack(spatial=["height", "width"]).transpose("frame", "spatial").data
+    C = sps_lstsq(A, varr, iter_lim=10)
     C = xr.DataArray(
-        C, dims=["unit_id", "frame"], coords={"unit_id": uids, "frame": fms}
-    )
+        C, dims=["frame", "unit_id"], coords={"unit_id": uids, "frame": fms}
+    ).transpose("unit_id", "frame")
     return C
-
-
-def initbf(
-    varr: xr.DataArray, A: xr.DataArray, C: xr.DataArray
-) -> Tuple[xr.DataArray, xr.DataArray]:
-    """
-    Initialize background terms given spatial and temporal components of cells.
-
-    A movie representation (with dimensions "height" "width" and "frame") of
-    estimated cell activities are computed as the product between the spatial
-    components matrix and the temporal components matrix of cells over the
-    "unit_id" dimension. Then the residule movie is computed by subtracting the
-    estimated cell activity movie from the input movie. Then the spatial
-    footprint of background `b` is the mean of the residule movie over "frame"
-    dimension, and the temporal component of background `f` is the mean of the
-    residule movie over "height" and "width" dimensions.
-
-    Parameters
-    ----------
-    varr : xr.DataArray
-        Input movie data. Should have dimensions ("frame", "height", "width").
-    A : xr.DataArray
-        Estimation of spatial footprints of cells. Should have dimensions
-        ("unit_id", "height", "width").
-    C : xr.DataArray
-        Estimation of temporal activities of cells. Should have dimensions
-        ("unit_id", "frame").
-
-    Returns
-    -------
-    b : xr.DataArray
-        Initial estimation of the spatial footprint of background. Has
-        dimensions ("height", "width").
-    f : xr.DataArray
-        Initial estimation of the temporal activity of background. Has dimension
-        "frame".
-    """
-    A = A.data.map_blocks(sparse.COO).compute()
-    Yb = (varr - darr.tensordot(C, A, axes=[(0,), (0,)])).clip(0)
-    b = Yb.mean("frame")
-    f = Yb.mean(["height", "width"])
-    arr_opt = fct.partial(
-        custom_arr_optimize, rename_dict={"tensordot": "tensordot_restricted"}
-    )
-    with da.config.set(array_optimize=arr_opt):
-        b = da.optimize(b)[0]
-        f = da.optimize(f)[0]
-    b, f = da.compute([b, f])[0]
-    return b, f
 
 
 @darr.as_gufunc(signature="(h, w)->(h, w)", output_dtypes=int, allow_rechunk=True)

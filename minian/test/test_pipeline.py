@@ -8,7 +8,7 @@ import pytest
 from ..utilities import open_minian
 
 
-@pytest.mark.flaky(reruns=3, condition=sys.platform.startswith("win32"))
+@pytest.mark.flaky(reruns=3)
 def test_pipeline_notebook():
     os.makedirs("artifact", exist_ok=True)
     args = [
@@ -26,13 +26,13 @@ def test_pipeline_notebook():
     assert minian_ds.sizes["frame"] == 2000
     assert minian_ds.sizes["height"] == 480
     assert minian_ds.sizes["width"] == 752
-    assert minian_ds.sizes["unit_id"] == 365
+    assert minian_ds.sizes["unit_id"] == 282
     assert (
         minian_ds["motion"].sum("frame").values.astype(int) == np.array([423, -239])
     ).all()
     assert int(minian_ds["max_proj"].sum().compute()) == 1501505
-    assert int(minian_ds["C"].sum().compute()) == 137240727
-    assert int(minian_ds["S"].sum().compute()) == 1245256
-    assert int(minian_ds["A"].sum().compute()) == 365
+    assert int(minian_ds["C"].sum().compute()) == 478444
+    assert int(minian_ds["S"].sum().compute()) == 3943
+    assert int(minian_ds["A"].sum().compute()) == 41755
     assert os.path.exists("./demo_movies/minian_mc.mp4")
     assert os.path.exists("./demo_movies/minian.mp4")
