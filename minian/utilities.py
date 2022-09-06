@@ -38,6 +38,7 @@ def load_videos(
     downsample: Optional[dict] = None,
     downsample_strategy="subset",
     post_process: Optional[Callable] = None,
+    nframes_manual: Optional[bool] = False,
 ) -> xr.DataArray:
     """
     Load multiple videos in a folder and return a `xr.DataArray`.
@@ -77,6 +78,7 @@ def load_videos(
         function should have signature `f(varr: xr.DataArray, vpath: str, vlist:
         List[str], varr_list: List[xr.DataArray]) -> xr.DataArray`. By default
         `None`
+        nframes
 
     Returns
     -------
@@ -112,7 +114,7 @@ def load_videos(
     else:
         raise ValueError("Extension not supported.")
 
-    varr_list = [movie_load_func(v) for v in vlist]
+    varr_list = [movie_load_func(v, nframes_manual=nframes_manual) for v in vlist]
     varr = darr.concatenate(varr_list, axis=0)
     varr = xr.DataArray(
         varr,
@@ -201,7 +203,7 @@ def load_avi_lazy_framewise(fname: str) -> darr.array:
     return da.array.stack(arr, axis=0)
 
 
-def load_avi_lazy(fname: str) -> darr.array:
+def load_avi_lazy(fname: str, nframes_manual: bool = False) -> darr.array:
     """
     Lazy load an avi video.
 
@@ -218,14 +220,45 @@ def load_avi_lazy(fname: str) -> darr.array:
     arr : darr.array
         The array representation of the video.
     """
+    print('Prepping to load ' + fname)
     probe = ffmpeg.probe(fname)
     video_info = next(s for s in probe["streams"] if s["codec_type"] == "video")
     w = int(video_info["width"])
     h = int(video_info["height"])
-    f = int(video_info["nb_frames"])
+    try:
+        f = int(video_info["nb_frames"])
+    except KeyError:  # NRK bugfix - try to get nframes if video seems ok but you can't get nb_frames
+        if nframes_manual:
+            print('No ''nb_frames'' key found in video data - getting manually. CHECK VIDEO TO MAKE SURE NOT CORRUPTED!')
+            f = get_nframes_manual(fname)
+            print('Loaded' + str(f) + ' frames manually.')
+
     return da.array.from_delayed(
         da.delayed(load_avi_ffmpeg)(fname, h, w, f), dtype=np.uint8, shape=(f, h, w)
     )
+
+
+def get_nframes_manual(fname: str) -> int:
+    """
+    Grab # frames using slower method if 'nb_frames' not in video.
+    :param fname:
+    :return:
+    """
+    video = cv2.VideoCapture(fname)
+    # initialize the total number of frames read
+    total = 0
+    # loop over the frames of the video
+    while True:
+        # grab the current frame
+        (grabbed, frame) = video.read()
+        # check to see if we have reached the end of the
+        # video
+        if not grabbed:
+            break
+        # increment the total number of frames read
+        total += 1
+    # return the total number of frames in the video file
+    return total
 
 
 def load_avi_ffmpeg(fname: str, h: int, w: int, f: int) -> np.ndarray:
