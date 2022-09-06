@@ -1343,3 +1343,59 @@ def sps_lstsq(a: csc_matrix, b: np.ndarray, **kwargs):
     for i in range(b.shape[0]):
         out[i, :] = lsqr(a, b[i, :].squeeze(), **kwargs)[0]
     return out
+
+
+def save_video_as_subfiles(varr: xr, chk: dict, intpath: str, frames_per_file: int = 30000,
+                           savename: str = "varr", sub_idx: None or list = None):
+    """Save large video variables as subfiles. Necessary if dask keeps giving you "KilledWorker"
+    warnings despite having enough RAM.
+    :param varr: xarray video
+    :param chk: dict from minian pipeline for your video
+    :param intpath: str from your minian pipeline where you want to save things
+    :param frames_per_file: max # frames per file, 30000 works for 64GB linux machine
+    :param savename: str, "varr" by default, will append a number to each sub-file
+    :param sub_idx: list or None. If list, will start saving first index and end with second, e.g. [ 2, 3]."""
+
+    nframes = varr.shape[0]
+    nfiles = np.ceil(nframes/frames_per_file).astype(int)
+    print('Breaking into ' + str(nfiles) + ' separate files')
+
+    start_frames = [nf * frames_per_file for nf in np.arange(nfiles)]
+    end_frames = [np.min((nframes, nf*frames_per_file))
+                  for nf in np.arange(1, nfiles + 1)]
+    file_num = np.arange(0, nfiles)
+
+    # Grab appropriate files
+    if sub_idx is None:
+        sub_idx = slice(0, nfiles)
+    else:
+        sub_idx = slice(sub_idx[0], sub_idx[1])
+    start_frames = start_frames[sub_idx]
+    end_frames = end_frames[sub_idx]
+    file_num = file_num[sub_idx]
+
+    for idf, start, end in zip(file_num, start_frames, end_frames):
+        print('Saving file # ' + str(idf))
+        save_minian(
+            varr[start:end, :, :].chunk({"frame": chk["frame"], "height": -1, "width": -1}).rename(savename + str(idf)),
+            intpath,
+            overwrite=True,
+        )
+
+
+def load_video_subfiles(vid_name: str, intpath: str or Path):
+    """Load in large video split into subfiles by function 'save_video_as_subfiles"""
+
+    # Get video sub-file names
+    subfiledirs = sorted(Path(intpath).glob(vid_name + "[0-9]*.zarr"))
+    subfilenames = [dir_use.name.split('.')[0] for dir_use in subfiledirs]
+    vid_list = []
+
+    # Load in the variables to the workspace
+    minian_ds = open_minian(intpath, return_dict=True)
+
+    # Make a list of each
+    vid_list = [minian_ds[file_name] for file_name in subfilenames]
+
+    return xr.concat(vid_list, dim="frame")
+
